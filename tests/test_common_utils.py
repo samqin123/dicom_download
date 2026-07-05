@@ -2,7 +2,7 @@ import os
 import tempfile
 import zipfile
 
-from common_utils import safe_name, extract_share_id, read_urls_file, make_zip_dir
+from common_utils import safe_name, extract_share_id, read_urls_file, read_urls_file_with_passwords, make_zip_dir
 
 
 def test_safe_name_basic():
@@ -53,6 +53,12 @@ def test_read_urls_file_and_make_zip_dir(tmp_path):
     )
     urls = read_urls_file(str(urls_txt))
     assert urls == ["https://a/viewer?shareId=A", "https://b/viewer/B"]
+
+    urls_with_passwords = read_urls_file_with_passwords(str(urls_txt))
+    assert urls_with_passwords == [
+        ("https://a/viewer?shareId=A", None),
+        ("https://b/viewer/B", None),
+    ]
 
     src_dir = tmp_path / "src"
     (src_dir / "x").mkdir(parents=True)

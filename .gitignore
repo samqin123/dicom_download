@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# DICOM 下载文件和配置（隐私和安全数据）
+download/
+download123/
+downloads/
+*.dcm
+urls.txt
+urls.txt.example
+tmp_real_test*/
+*.bak
+dicom_download.toml
+urls_*.txt
+debug_password_input*.py
+test_password*.py
+CHANGELOG.md
+PR_SUBMIT_SUMMARY.md

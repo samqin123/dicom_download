@@ -9,9 +9,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
-from playwright.async_api import async_playwright
-
-from common_utils import extract_share_id, read_urls_file, make_zip_dir
+from common_utils import (
+    extract_share_id,
+    make_zip_dir,
+    read_urls_file_with_passwords,
+)
 
 
 def detect_provider(url: str) -> str:
@@ -79,10 +81,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--hd-timeout-ms", type=int, default=10000, help="高清切换超时（毫秒）"
     )
     ap.add_argument(
-        "--max-rounds", type=int, default=2, help="逐帧播放轮数上限（复肿 fz）"
+        "--max-rounds", type=int, default=3, help="逐帧播放轮数上限（复肿 fz，默认3轮）"
     )
     ap.add_argument(
-        "--step-wait-ms", type=int, default=25, help="逐帧间隔（毫秒）（复肿 fz）"
+        "--step-wait-ms", type=int, default=50, help="逐帧间隔（毫秒）（复肿 fz，默认50ms确保完整性）"
     )
     ap.add_argument(
         "--quiet-checks", type=int, default=6, help="静默观察次数（复肿 fz）"
@@ -163,9 +165,10 @@ async def run_tz_one(url: str, out_dir: str, mode: str, headless: bool):
     )
 
 
-async def run_fz_one(url: str, out_dir: str, mode: str, headless: bool, router_args):
+async def run_fz_one(url: str, out_dir: str, mode: str, headless: bool, router_args, password: str | None = None):
     # 延迟导入：避免只运行其他 provider 时加载不必要的模块
     import shdc_download_dicom as fz_mod
+    from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
         await fz_mod.download_one(
@@ -182,6 +185,7 @@ async def run_fz_one(url: str, out_dir: str, mode: str, headless: bool, router_a
             quiet_step_ms=router_args.quiet_step_ms,
             max_inflight=router_args.max_inflight,
             overwrite=router_args.overwrite,
+            password=password,
         )
 
 
@@ -190,6 +194,7 @@ async def run_nyfy_one(
 ):
     # 延迟导入：避免只运行其他 provider 时加载不必要的模块
     import nyfy_download_dicom as nyfy_mod
+    from playwright.async_api import async_playwright
 
     args_ns = SimpleNamespace(
         url=url,
@@ -374,27 +379,29 @@ async def main():
     args = ap.parse_args()
 
     if args.url:
-        urls = [args.url]
+        urls_with_password = [(args.url, None)]
     else:
-        urls = read_urls_file(args.urls_file)
+        urls_with_password = read_urls_file_with_passwords(args.urls_file)
 
     out_parent = os.path.abspath(args.out_parent)
     os.makedirs(out_parent, exist_ok=True)
 
     print("\n>>> 启动参数：")
-    print(f"    URL数量     : {len(urls)}")
+    print(f"    URL数量     : {len(urls_with_password)}")
     print(f"    out_parent  : {out_parent}")
     print(f"    headless    : {args.headless}\n")
 
-    for i, url in enumerate(urls, start=1):
+    for i, (url, password) in enumerate(urls_with_password, start=1):
         prov = args.provider if args.provider != "auto" else detect_provider(url)
         share_id = extract_share_id(url)
         out_dir = os.path.join(out_parent, share_id)
         os.makedirs(out_dir, exist_ok=True)
 
         print("=" * 80)
-        print(f"### [{i}/{len(urls)}] provider={prov}")
+        print(f"### [{i}/{len(urls_with_password)}] provider={prov}")
         print(f"URL      : {url}")
+        if password:
+            print(f"安全码   : {'*' * len(password)}")
         print(f"输出目录 : {out_dir}")
         print("=" * 80)
 
@@ -402,14 +409,14 @@ async def main():
             if prov == "tz":
                 await run_tz_one(url, out_dir, args.mode, args.headless)
             elif prov == "fz":
-                await run_fz_one(url, out_dir, args.mode, args.headless, args)
+                await run_fz_one(url, out_dir, args.mode, args.headless, args, password)
             elif prov == "nyfy":
                 await run_nyfy_one(url, out_dir, args.headless, out_parent, args)
             elif prov == "cloud":
                 # cloud-dicom-downloader 走子进程（方式B）
                 run_cloud_one(url, out_dir, args)
             else:
-                await run_fz_one(url, out_dir, args.mode, args.headless, args)
+                await run_fz_one(url, out_dir, args.mode, args.headless, args, password)
         except Exception as e:
             print(f">>> ❌ 失败：{url}")
             print(f">>> 错误：{e}")

@@ -52,7 +52,8 @@
 
 ### 步骤 7：文档与示例
 - 在 `README.md` 中增加站点使用说明和参数提示；
-- 提供 `urls.txt` 示例（或补充到 `urls.txt.example`）。
+- 提供 `urls.txt` 示例（或补充到 `urls.txt.example`）；
+- 如果是新手环境准备，先看 `README.md` 顶部的 Quick Start / 快速开始。
 
 ### 步骤 8：合规与注意事项
 - 不要提交任何 PHI/敏感数据样本；

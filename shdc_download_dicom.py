@@ -1,9 +1,10 @@
 import argparse
 import asyncio
+import hashlib
 import os
 import re
 import shutil
-from collections import defaultdict
+from collections import Counter, defaultdict
 from urllib.parse import urlparse, parse_qs
 
 from playwright.async_api import async_playwright
@@ -119,6 +120,73 @@ async def wait_viewer_ready(page, timeout_ms: int = 120000):
         )
 
 
+async def input_password_if_needed(page, password: str | None, timeout_ms: int = 30000):
+    """
+    如果页面出现安全码输入框，自动填入密码。
+    本页面使用虚拟键盘，需要点击对应数字。
+    """
+    if not password:
+        return
+    
+    print(f">>> 检查安全码输入框...")
+    
+    try:
+        # 先检查是否有"请输入安全码"提示
+        header = page.locator('.header')
+        header_text = await header.text_content() if await header.is_visible(timeout=2000) else ""
+        
+        if "安全码" not in header_text:
+            print(">>> 页面无需输入安全码")
+            return
+        
+        print(f">>> 检测到安全码输入界面，开始输入密码")
+        
+        # 页面使用虚拟键盘，逐个点击数字
+        for i, digit in enumerate(password, 1):
+            # 使用属性选择器避免CSS ID选择器的数字开头问题
+            button = page.locator(f"div[id='{digit}'].item, div[id='{digit}']")
+            try:
+                # 等待按钮可见，然后点击
+                await button.first.wait_for(state="visible", timeout=2000)
+                await button.first.click(force=True)
+                print(f">>> 输入第{i}位数字: {digit}")
+                await page.wait_for_timeout(500)
+            except Exception as e:
+                print(f">>> ⚠ 点击数字 {digit} 失败: {e}")
+        
+        # 等待键盘稳定
+        await page.wait_for_timeout(1000)
+        
+        # 找到提交按钮并点击（支持多种选择器）
+        submit_selectors = [
+            "button:has-text('提交')",
+            ".btn_box button",
+            "button[onclick*='submitCode']",
+            "div.btn_box button",
+        ]
+        
+        submit_clicked = False
+        for sel in submit_selectors:
+            try:
+                submit_btn = page.locator(sel)
+                if await submit_btn.first.is_visible(timeout=1000):
+                    await submit_btn.first.click(force=True)
+                    print(f">>> 已点击提交按钮")
+                    submit_clicked = True
+                    break
+            except Exception:
+                pass
+        
+        if not submit_clicked:
+            print(f">>> ⚠ 找不到提交按钮")
+        
+        # 等待页面跳转
+        await page.wait_for_timeout(3000)
+        
+    except Exception as e:
+        print(f">>> 安全码填入失败：{e}")
+
+
 async def switch_to_hd_mode(page, timeout_ms: int = 10000):
     """
     尝试把右下角“流畅”切为“原图(清晰度高)”。
@@ -195,7 +263,31 @@ async def read_series_list(page):
 
 
 async def goto_image_index(page, idx: int):
-    """通过 JS 操作底部 slider 跳到指定帧（0-based）。"""
+    """优先用鼠标点击/拖动 slider 跳到指定帧（0-based），失败后回退到 JS 方案。"""
+    slider_sel = "div.scroll-bar .el-slider__runway"
+
+    try:
+        slider_max = await get_slider_max(page)
+        if slider_max is None:
+            raise RuntimeError("slider max not found")
+
+        runway = page.locator(slider_sel)
+        box = await runway.bounding_box()
+        if not box or box.get("width", 0) <= 0:
+            raise RuntimeError("slider runway box not found")
+
+        clamped = max(0, min(idx, slider_max))
+        ratio = 0 if slider_max <= 0 else clamped / slider_max
+        x = box["x"] + box["width"] * ratio
+        y = box["y"] + box["height"] / 2
+
+        # 更像真人：直接点到目标位置，让页面自己处理滑块更新和请求触发。
+        await page.mouse.click(x, y)
+        await page.wait_for_timeout(30)
+        return True
+    except Exception:
+        pass
+
     ok = await page.evaluate(
         """
         (idx) => {
@@ -254,6 +346,7 @@ async def download_one(
     quiet_step_ms: int,
     max_inflight: int,
     overwrite: bool,
+    password: str | None = None,
 ):
     if overwrite and os.path.exists(out_dir):
         shutil.rmtree(out_dir, ignore_errors=True)
@@ -281,8 +374,18 @@ async def download_one(
     page.set_default_timeout(120000)
     page.set_default_navigation_timeout(120000)
 
+    try:
+        cdp = await context.new_cdp_session(page)
+        await cdp.send("Network.enable")
+        await cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+    except Exception:
+        pass
+
     print(f">>> 打开检查页面: {check_url}")
     await safe_goto(page, check_url, timeout_ms=120000, retries=3)
+
+    # 自动输入安全码（如有）
+    await input_password_if_needed(page, password)
 
     # 等 UI 真正 ready（修复 ctype=4 headless 下“序列按钮找不到/点不到”）
     await wait_viewer_ready(page, timeout_ms=120000)
@@ -290,18 +393,27 @@ async def download_one(
     if not skip_hd:
         await switch_to_hd_mode(page, timeout_ms=hd_timeout_ms)
 
-    current_series = {"folder": None}
-    seen_urls = defaultdict(set)
+    current_series = {"folder": None, "base": 0, "expected": None}
+    seen_body_hashes = defaultdict(set)
     saved_counts = defaultdict(int)
+    response_stats = defaultdict(Counter)
+    response_samples = defaultdict(dict)
 
     inflight_sem = asyncio.Semaphore(max_inflight)
     pending_tasks = set()
 
-    async def handle_response(resp):
+    async def handle_response(resp, folder: str | None):
         """
         监听所有响应，筛选出像 DICOM 的 body 并落盘。
+        folder 在 response 事件触发时就快照，避免异步任务延迟导致串 series。
         """
         try:
+            if not folder:
+                return
+
+            stats = response_stats[folder]
+            stats["seen"] += 1
+
             url = resp.url
             host = urlparse(url).netloc.lower()
 
@@ -310,13 +422,7 @@ async def download_one(
             is_old_fz = ("cleandata" in url_l) and ("imcisfiles" in url_l)
             is_shdc_domain = host.endswith("shdc.org.cn")
             if not (is_old_fz or is_shdc_domain):
-                return
-
-            folder = current_series["folder"]
-            if not folder:
-                return
-
-            if url in seen_urls[folder]:
+                stats["skip_host"] += 1
                 return
 
             # 小文件大概率是 json/js/css，直接跳过
@@ -324,6 +430,7 @@ async def download_one(
             if cl:
                 try:
                     if int(cl) < 2048:
+                        stats["skip_small"] += 1
                         return
                 except Exception:
                     pass
@@ -332,10 +439,31 @@ async def download_one(
                 body = await resp.body()
 
             if not looks_like_dicom_fast(body):
+                stats["skip_not_dicom"] += 1
+                if "not_dicom" not in response_samples[folder]:
+                    response_samples[folder]["not_dicom"] = {
+                        "url": url[:160],
+                        "content_type": resp.headers.get("content-type", ""),
+                        "content_length": resp.headers.get("content-length", ""),
+                        "head_hex": body[:24].hex(),
+                    }
                 return
 
-            seen_urls[folder].add(url)
+            body_hash = hashlib.sha1(body).hexdigest()
+            if body_hash in seen_body_hashes[folder]:
+                stats["skip_duplicate"] += 1
+                return
+            seen_body_hashes[folder].add(body_hash)
+
+            # 当前 series 已达到期望张数后不再继续写，避免迟到/重复响应造成超量。
+            expected = current_series.get("expected") if folder == current_series.get("folder") else None
+            base = current_series.get("base", 0) if folder == current_series.get("folder") else 0
+            if expected is not None and saved_counts[folder] - base >= expected:
+                stats["skip_over_expected"] += 1
+                return
+
             saved_counts[folder] += 1
+            stats["saved"] += 1
             idx = saved_counts[folder]
 
             out_series_dir = os.path.join(out_dir, folder)
@@ -349,7 +477,8 @@ async def download_one(
             return
 
     def on_response(resp):
-        t = asyncio.create_task(handle_response(resp))
+        folder = current_series["folder"]
+        t = asyncio.create_task(handle_response(resp, folder))
         pending_tasks.add(t)
         t.add_done_callback(lambda _t: pending_tasks.discard(_t))
 
@@ -373,11 +502,14 @@ async def download_one(
         await open_series_panel(page)
         cards = page.locator("div.all-serie-wapper div.serie-wapper")
         card = cards.nth(info["index"])
+
+        # 先记录已有数量，再绑定当前 series；点击卡片后极早到达的响应也计入本 series。
+        base_count = saved_counts[info["folder"]]
+        current_series["folder"] = info["folder"]
+
         await card.scroll_into_view_if_needed()
         await card.click(force=True)
         await page.wait_for_timeout(300)
-
-        current_series["folder"] = info["folder"]
 
         slider_max = await get_slider_max(page)
         if slider_max is None:
@@ -385,11 +517,11 @@ async def download_one(
             continue
 
         num_images = slider_max + 1
+        current_series["base"] = base_count
+        current_series["expected"] = num_images
         print(
             f"    本 series 共有 {num_images} 张（slider max={slider_max}，卡片显示={info['num_images_from_card']}）"
         )
-
-        base_count = saved_counts[info["folder"]]
 
         for r in range(1, max_rounds + 1):
             before = saved_counts[info["folder"]]
@@ -403,6 +535,8 @@ async def download_one(
             print(
                 f"    >> 第 {r} 轮结束：本轮新增 {after - before}，累计 {after - base_count}/{num_images}"
             )
+            if after - before == 0 and r == 1:
+                print("    >> slider 本轮未触发 DICOM 请求，跳过键盘 fallback（避免串片/重复保存）")
             if after - base_count >= num_images:
                 break
 
@@ -420,9 +554,34 @@ async def download_one(
             if no_change >= 3:
                 break
 
+        # 每个 series 结束前先等当前响应任务落盘，避免拖到下一个 series 造成串片。
+        if pending_tasks:
+            await asyncio.wait(list(pending_tasks), timeout=10)
+
         final_count = saved_counts[info["folder"]] - base_count
+        stats = response_stats[info["folder"]]
         print(f"    >> series 完成：期望 {num_images}，实际保存 {final_count}")
-        if final_count < num_images:
+        if final_count == 0:
+            print(
+                f"    >>> ❌ 该 series 连续 {max_rounds} 轮后仍然 0 张；请检查 series 是否真正切换成功、slider 是否触发、或响应是否被过滤"
+            )
+            print(
+                "    >>> 调试统计："
+                f"seen={stats['seen']} saved={stats['saved']} "
+                f"skip_host={stats['skip_host']} skip_small={stats['skip_small']} "
+                f"skip_not_dicom={stats['skip_not_dicom']} skip_duplicate={stats['skip_duplicate']} "
+                f"skip_over_expected={stats['skip_over_expected']}"
+            )
+            sample = response_samples[info["folder"]].get("not_dicom")
+            if sample:
+                print(
+                    "    >>> 非DICOM样本："
+                    f"type={sample['content_type']} len={sample['content_length']} "
+                    f"head={sample['head_hex']} url={sample['url']}"
+                )
+        elif final_count > num_images:
+            print("    >>> ⚠ 实际保存超过期望张数，可能存在重复响应或跨 series 混入；建议检查输出目录并谨慎使用该 series")
+        elif final_count < num_images:
             print("    >>> ⚠ 可能未完整命中全部切片，可尝试提高 max_rounds 或增大 step_wait_ms")
 
     # 等待最后一批写盘任务

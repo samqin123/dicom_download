@@ -1,133 +1,112 @@
-## dicom_download
-获取/批量下载 DICOM 影像数据（多站点适配，支持多 URL 批处理与逐 URL 打包）
+# dicom_download
 
-### 项目初衷
-这个项目源于一个很现实、也很令人难过的观察：不少并不富裕的肿瘤病友在承担高昂医疗费用的同时，还常常需要额外花费数百元、反复去获取/导出影像的原始 DICOM 文件，以便给医生评估病情进展；更有些医院甚至不提供原始 DICOM 的下载服务。
-本项目希望把这件事变得更可得、更少折腾一些，尽量让“拿到属于自己的影像数据”不再成为负担。
-本仓库采用 Apache 2.0 许可，允许商业使用；但也真诚地希望你在使用它时，能顺手多帮一把：如果能免费提供给有需要的病友与医生使用，就不要再额外加一道收费门槛。
-补充说明：本项目的 **cloud provider** 部分融合/适配了上游开源项目 [Kaciras/cloud-dicom-downloader](https://github.com/Kaciras/cloud-dicom-downloader)。该项目的许可为 **Apache 2.0 + Commons Clause**，其中 Commons Clause 明确 **不授予 “Sell（以软件功能为核心收费提供产品/服务）” 的权利**。因此，如你计划基于 cloud provider 能力开展商业收费/托管服务，请务必先阅读并遵守其许可条款，必要时联系原作者获得授权。
+这是给患者和家属用的文本菜单版入口。
 
-### 已适配站点与脚本
-- zlyy.tjmucih.cn（天肿 圆心云影 PC 右侧按钮列表）
-  - 脚本：`tjmucih_download_dicom.py`
-- ylyyx.shdc.org.cn（复肿 底部序列面板 + 高清切换 + 滑块逐帧）
-  - 脚本：`shdc_download_dicom.py`
-- zhyl.nyfy.com.cn（宁夏总医院 WebSocket 元数据 + h5Cache 拉原始像素 + 组 Part10 DICOM）
-  - 脚本：`nyfy_download_dicom.py`
+## 怎么启动
 
-### 多 URL 批处理（推荐）
-- 准备 `urls.txt`（每行一个 URL，支持 `#` 注释）：
+直接运行：
+
+```bash
+uv run python main.py
+```
+
+启动后会看到一个菜单：
+
+1. 单 URL 下载（粘贴一个链接）
+2. 本地 txt 批量下载（输入 txt 路径）
+3. 默认读取当前目录 `urls.txt`（直接回车即可）
+4. 查看配置
+5. 修改并保存配置
+6. 保存当前配置
+7. 退出
+
+## 第一次使用
+
+先准备这三样：
+
+1. 安装 Python 3.10+
+2. 安装 uv
+3. 安装 Playwright 浏览器：
+
+```bash
+uv sync
+uv run python -m playwright install chromium
+```
+
+## 最常用的操作
+
+### 单个链接
+
+在菜单里选 **1**，然后粘贴链接。
+
+### 一次多个链接
+
+在菜单里选 **2**，输入本地 txt 文件路径。txt 里每行一个链接。
+
+### 直接用当前目录的 urls.txt
+
+在菜单里选 **3**。如果当前目录里有 `urls.txt`，就会直接读取。
+
+## 配置怎么改
+
+菜单里选 **4** 可以查看当前配置。
+
+菜单里选 **5** 可以修改后保存：
+
+- provider
+- mode
+- 是否无界面
+- `max_rounds`
+- `step_wait_ms`
+- 输出目录
+- 是否跳过高清切换
+- 是否生成 zip
+- 是否覆盖旧目录
+
+如果出现下面这句：
 
 ```text
-# 一个或多个检查链接
-https://example.com/viewer?share_id=AAAA
-https://example.com/viewer?share_id=BBBB
+>>> ⚠ 可能未完整命中全部切片，可尝试提高 max_rounds 或增大 step_wait_ms
 ```
 
-- 注意：上面是示例占位链接，实际使用时请把 `urls.txt`（或你自己的 `URLS.txt`）里的链接替换成**你自己的真实分享链接**，否则无法下载。
+就把这两个值调大一些。
 
-- 使用统一路由入口（自动按域名选择脚本/策略）：
+## 自动生成配置
+
+第一次运行时，如果当前目录没有 `dicom_download.toml`，程序会自动生成一个默认模板。
+
+你也可以用菜单里的 **6** 保存当前配置。
+
+## 常见问题
+
+### 提示浏览器不存在
+
+重新执行：
 
 ```bash
-python multi_download.py --urls-file urls.txt --out-parent ./downloads
+uv run python -m playwright install chromium
 ```
 
-- 运行（以复肿脚本为例，其他脚本参数相同或相近）：
+### 提示 Python 包缺失
+
+重新执行：
 
 ```bash
-python shdc_download_dicom.py --urls-file urls.txt --out-parent ./downloads
+uv sync
 ```
 
-行为说明：
-- 输出目录结构：`./downloads/<share_id>/...dicom...`
-- 默认为每个 URL 生成独立 zip：`./downloads/<share_id>.zip`
-- 共享选项：`--no-zip` 关闭打包；`--headless/--no-headless` 控制浏览器模式
+## 致谢与合规
 
-### 单 URL（快速尝试）
-- 天肿（zlyy.tjmucih.cn）：
-```bash
-python tjmucih_download_dicom.py -u "<URL>" -o output_tz --mode diag
-```
-- 复肿（ylyyx.shdc.org.cn）：
-```bash
-python shdc_download_dicom.py --url "<URL>" --out-parent ./downloads --headless
-```
-- 宁夏总医院（zhyl.nyfy.com.cn，WS+h5Cache）：
-```bash
-python nyfy_download_dicom.py "<URL>" --out-parent ./downloads --zip
-```
+- 感谢引用上游项目的开源实现与思路
+- 感谢小胰宝志愿者开源贡献
+- **禁止使用本工具向患者收费或变相收费**
 
-### 常用参数
-- 通用：
-  - `--url`/`--urls-file`：单个或批量 URL
-  - `--out-parent`：多 URL 输出父目录（默认 `./downloads`）
-  - `--no-zip` 或 `--zip/--no-zip`：是否为每个 URL 生成独立 zip
-  - `--headless/--no-headless`：无界面/有界面模式
-- UI 响应抓取策略（天肿/复肿）：
-  - `--mode diag|nondiag|all`：按 UI 粗略分类决定“点哪些序列”
-  - `--skip-hd`/`--hd-timeout-ms`：是否尝试切换“原图(清晰度高)”及超时
-  - `--max-rounds`、`--step-wait-ms`、`--quiet-checks`、`--quiet-step-ms`：逐帧播放与静默观察控制
-- WS+h5Cache 策略（nyfy_download_dicom.py）：
-  - `--concurrency`、`--download-retries`、`--http-timeout-ms`、`--retry-backoff-ms`
-  - `--autoplay-rounds`、`--autoplay-delay-ms`、`--fallback-steps-per-round`
-  - `--zip/--no-zip`、`--zip-dir`、`--verify/--no-verify`
+## 站点说明
 
-### 默认行为与“密码/登录”提示（建议先读）
-- 默认会**打开浏览器**（`headless=False`）。如在服务器/无桌面环境运行，建议显式加 `--headless`（或使用带桌面的环境）。
-- 默认会为**每个 URL 生成一个 zip**（除非 `--no-zip`）。
-- 如果你更关注**下载速度**而不是“尽量全量”，可以使用 `--mode diag`：仅下载/触发“诊断类”序列，通常更快、更省资源（但可能不包含定位片/辅助序列等）。
-- `urls.txt` 只是批量输入：**不保证每个 URL 都能正常下载**。常见失败原因包括链接过期/失效、需要分享密码/登录校验、站点策略变化等；批处理会按 URL 逐个尝试，失败会跳过继续下一个。
-- 遇到需要“分享密码/登录校验”的链接：
-  - **宁夏总医院**：不传 `--password` 时需要你在浏览器里手动输入并点击“验证密码”。脚本默认等待弹窗关闭约 **120 秒**，超时会失败；建议直接传 `--password` 或尽快完成验证。
-  - **天肿**：脚本没有单独的密码弹窗处理逻辑；若页面被密码/登录页拦住，需要你在浏览器里手动完成验证。脚本会等待关键元素最多约 **120 秒**，超时会失败；建议尽快完成页面前置步骤。
-  - **cloud provider（*.medicalimagecloud.com）**：必须提供 `--cloud-password`，否则会直接报错退出（不支持手动输入流程）。
+- zlyy.tjmucih.cn：天肿
+- ylyyx.shdc.org.cn：复肿
+- zhyl.nyfy.com.cn：宁夏总医院
 
-### 统一路由入口：multi_download.py
-- 自动按域名选择 provider（可用 `--provider tz|fz|nyfy` 覆盖；其中 tz=天肿、fz=复肿、nyfy=宁夏总医院）
-- 共享输出语义：每个 URL 一个子目录与独立 zip（除非 `--no-zip`）
-- 示例：
+## 高级用法
 
-```bash
-python multi_download.py --urls-file urls.txt --out-parent ./downloads
-```
-
-### cloud provider（融合 cloud-dicom-downloader，上游已停止维护）
-说明：
-- 致谢：本项目的 cloud provider 能力来自对开源项目 [Kaciras/cloud-dicom-downloader](https://github.com/Kaciras/cloud-dicom-downloader) 的融合与适配，感谢原作者与贡献者。
-- 上游项目 `cloud-dicom-downloader` 作者已明确 **不再更新/不再维护**，本项目以“兼容层”的方式融合其能力，便于继续扩展更多站点。
-- `multi_download.py` 会对部分域名自动路由到 `cloud` provider（也可 `--provider cloud` 强制）。
-- cloud provider 使用“子进程方式（方式B）”运行上游 `cloud-dicom-downloader/downloader.py`：
-  - 子进程在**临时工作目录**运行，上游会写死输出到 `./download/...`
-  - 运行结束后，外壳会把 `tmp/download/<study_dir>` **整体搬运**到本项目的 per-URL `out_dir`
-  - 最后仍由外壳统一打 zip，命名使用唯一 ID（避免覆盖）
-
-常用参数：
-- `--cloud-password`：仅 `*.medicalimagecloud.com` 这类链接必需
-- `--cloud-raw`：透传上游 `--raw`（下载未压缩像素）
-- `--cloud-keep-temp`：失败/调试时保留临时目录并打印路径
-
-示例：
-
-```bash
-# 自动路由（urls.txt 中混合多站点）
-python multi_download.py --urls-file urls.txt --out-parent ./downloads
-
-# 强制走 cloud（调试）
-python multi_download.py --url "<URL>" --provider cloud --cloud-keep-temp
-
-# medicalimagecloud 需要密码
-python multi_download.py --url "<URL>" --provider cloud --cloud-password "<PWD>"
-```
-
-### 目录与命名
-- 每个 URL 的子目录名使用 `share_id`（若无则路径最后段，再无则对 URL 做安全化）。
-- 文件/目录命名采用统一的安全规则：空白转下划线、非法字符过滤、长度限制。
-
-### 注意事项
-- 不要提交任何包含 PHI/敏感信息的数据样本。
-- 不同站点 UI 有差异，若遇到选择器变更或策略不适配，可反馈或调整对应脚本的选择器/策略参数。
-- cloud provider 依赖上游已停止维护的实现，若与本项目已有实现（天肿/复肿/宁夏总医院；tz/fz/nyfy）重叠，则优先以本项目实现为准。
-
-### 贡献
-- 如何新增一家医院/厂商适配，请参见 `CONTRIBUTING.md`。
-- 如需支持新的医院/站点，请先新开 issue，并提供有效期尽量长的测试链接（便于排查与回归）。
+如果你是熟练用户，也可以继续直接看 `main.py --help`。

@@ -83,15 +83,40 @@ def read_urls_file(path: str) -> list[str]:
     """
     从文本文件读取 URL 列表：
     - 忽略空行与以 # 开头的注释行
+    - 返回纯 URL 列表
     """
-    urls: list[str] = []
+    results: list[str] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            urls.append(s)
-    return urls
+            if "安全码:" in s:
+                s = s.split("安全码:", 1)[0].strip()
+            results.append(s)
+    return results
+
+
+def read_urls_file_with_passwords(path: str) -> list[tuple[str, str | None]]:
+    """
+    从文本文件读取 URL 列表及其对应的安全码：
+    - 忽略空行与以 # 开头的注释行
+    - 支持 "URL 安全码:xxx" 格式，自动提取纯 URL 和安全码
+    - 返回 (URL, 安全码) 的元组列表，无安全码时为 (URL, None)
+    """
+    results: list[tuple[str, str | None]] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            password = None
+            if "安全码:" in s:
+                parts = s.split("安全码:")
+                s = parts[0].strip()
+                password = parts[1].strip() if len(parts) > 1 else None
+            results.append((s, password))
+    return results
 
 
 def make_zip_dir(src_dir: str, zip_path: str) -> None:
